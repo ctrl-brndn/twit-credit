@@ -980,6 +980,16 @@
                         elem.appendChild(inputWrap);
                     }
                 }
+            ],
+            'Metadata': [
+                {
+                    name: 'embed_metadata',
+                    category: 'download_preferences',
+                    description: 'Embed the author, tweet ID, and a link to the tweet directly into saved images ' +
+                        '(EXIF fields for .jpg, tEXt chunks for .png - other formats are unaffected). ' +
+                        'Slower and uses more memory than a normal download, since the image has to be ' +
+                        'fetched and rewritten here rather than downloaded directly by the browser.',
+                }
             ]
         },
         'Extras': {

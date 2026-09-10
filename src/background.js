@@ -250,6 +250,17 @@ const defaultSettings = {
         disable_cancelled_download_notification: {
             default: false,
             validate: CONSTRAINTS.BOOLEAN
+        },
+
+        // usy-fork: embed the source tweet's author/tweetId/link directly into
+        // saved image files (EXIF for jpg, tEXt chunks for png), instead of
+        // only encoding them into the filename. Off by default since it means
+        // fetching+re-encoding the image in the background page rather than
+        // letting the browser stream the download directly, which is slower
+        // and uses more memory for large images/bulk downloads.
+        embed_metadata: {
+            default: false,
+            validate: CONSTRAINTS.BOOLEAN
         }
     },
 
@@ -893,6 +904,48 @@ async function checkErrorAllowed(error) {
         && Settings.download_preferences.disable_cancelled_download_notification);
 }
 
+// usy-fork: image formats we know how to write text metadata into.
+const METADATA_EMBEDDABLE_FORMATS = new Set(['jpg', 'jpeg', 'png']);
+
+/**
+ * Fetches an image and returns a URL (a data: URL) with the source tweet's
+ * author, tweet ID, and link embedded directly into the file - EXIF fields
+ * for jpg, tEXt chunks for png. Falls back to the original, untouched
+ * `m.url` for videos/gifs, unsupported image formats, when the setting is
+ * off, or if anything about the fetch/embed step fails.
+ *
+ * Not available in the Chrome (MV3 service worker) build: there's no
+ * `URL.createObjectURL`/window there to make this worthwhile, since
+ * `extension.downloads.download` still needs a real URL to hand to the
+ * browser's native download flow rather than an in-memory blob.
+ *
+ * @param {MediaItem} m
+ * @param {NameParts} parts
+ * @returns {Promise<string>}
+ */
+async function prepareDownloadUrl(m, parts) {
+    if (chromeMode || m.type !== 'Image') return m.url;
+    if (!Settings.download_preferences.embed_metadata) return m.url;
+
+    const format = (parts.extension || '').toLowerCase();
+    if (!METADATA_EMBEDDABLE_FORMATS.has(format)) return m.url;
+
+    const meta = {author: parts.username, tweetId: parts.tweetId, sourceUrl: m.tweetURL};
+
+    try {
+        const response = await fetch(m.url);
+        if (!response.ok) return m.url;
+        const buffer = await response.arrayBuffer();
+
+        return (format === 'png')
+            ? embedPngMetadata(buffer, meta)
+            : embedJpegMetadata(buffer, meta);
+    } catch (e) {
+        console.error('Failed to embed tweet metadata into image, saving without it:', e);
+        return m.url;
+    }
+}
+
 /**
  * @param {MediaItem[]} media
  * @param {EventModifiers} modifiers
@@ -900,7 +953,7 @@ async function checkErrorAllowed(error) {
  * @param {function(any)} sendResponse
  */
 function download_media({media, modifiers, tabId}, sendResponse) {
-    Settings.getSettings().then(() => {
+    Settings.getSettings().then(async () => {
         const {save_format, download_history_enabled} = Settings.download_preferences;
         for (const m of media) {
             const parts = ((m.type === 'Video') ? getNamePartsVideo : getNamePartsImage)(m.tweetURL, m.url);
@@ -908,7 +961,8 @@ function download_media({media, modifiers, tabId}, sendResponse) {
             if (download_history_enabled) void download_history_add(m.save_id);
             const onError = (error) => download_history_remove({id: m.save_id},
                 () => checkErrorAllowed(error).then((r) => r && sendToTab({type: 'error', message: `Failed to download with error ${error}`, media: m, modifiers}, tabId)));
-            download(m.url, formatFilename(parts, save_format), modifiers, {media: m}, tabId)
+            const url = await prepareDownloadUrl(m, parts);
+            download(url, formatFilename(parts, save_format), modifiers, {media: m}, tabId)
                 .then((downloadId) => {
                     if (downloadId === undefined) onError("Failed to start download");
                     else if (downloadId === -1) void 0; // android, ignore it

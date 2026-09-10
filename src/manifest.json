@@ -36,6 +36,8 @@
   "background": {
     "scripts": [
       "/common.js",
+      "/libs/piexif.js",
+      "/metadata.js",
       "/background.js"
     ],
     "persistent": false
